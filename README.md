@@ -50,9 +50,10 @@ The normal sequence is:
 3. Register the generated public key in FileMaker Admin Console.
 4. Request the initial certificate with the deploy hook disabled.
 5. Run the read-only validation.
-6. Perform the first controlled activation during a maintenance window.
-7. Verify public HTTPS and FileMaker service health.
-8. Enable and test the Certbot deploy hook.
+6. Set FileMaker `UseSecureConnection=true` interactively without storing the Admin Console password.
+7. Perform the first controlled activation during a maintenance window.
+8. Verify public HTTPS, Database Server SSL, and FileMaker service health.
+9. Enable and test the Certbot deploy hook.
 
 Follow [MANUAL.md](MANUAL.md) for the complete procedure, validation commands, backup process, recovery instructions, and troubleshooting guidance.
 
@@ -76,6 +77,8 @@ sudo ./install.sh
 The installer asks for the FileMaker hostname, Certbot certificate name, and Cloudflare token. Site-specific values are written to protected files on the target host; they are not embedded in this repository.
 
 Do not enable the deploy hook until the initial certificate has been imported, activated, and externally verified. Continue with the public-key registration section in [MANUAL.md](MANUAL.md).
+
+The installer reads FileMaker's latest Event log SSL state without requiring Admin Console credentials. It warns if Database Server SSL is disabled or unavailable. The hook-enablement helper later fails closed unless the running Database Server reports SSL network encryption enabled.
 
 ## Repository contents
 
@@ -112,7 +115,7 @@ Do not enable the deploy hook until the initial certificate has been imported, a
 
 ## Updating project code
 
-Certificate renewal does not require a project-code update. Section 16 of the manual is used only when this repository's program or hook changes.
+Certificate renewal does not require a project-code update. Section 17 of the manual is used only when this repository's program or hook changes.
 
 After reviewing a new release:
 

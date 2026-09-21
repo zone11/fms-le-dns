@@ -7,6 +7,7 @@ CONFIG_FILE="${CONFIG_DIR}/fms-le-dns.conf"
 PKI_DIR="${CONFIG_DIR}/pki"
 CREDENTIAL_DIR="/etc/letsencrypt/credentials"
 CREDENTIAL_FILE="${CREDENTIAL_DIR}/cloudflare.ini"
+EVENT_LOG="/opt/FileMaker/FileMaker Server/Logs/Event.log"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 FQDN=""
@@ -97,6 +98,8 @@ for command_path in \
     /usr/bin/openssl \
     /usr/bin/python3 \
     /usr/bin/certbot \
+    /usr/bin/grep \
+    /usr/bin/tail \
     /usr/sbin/service; do
     [[ -x "$command_path" ]] || fail "missing required executable: $command_path"
 done
@@ -213,4 +216,23 @@ echo "Staged installation complete."
 echo "Configuration: ${CONFIG_FILE}"
 echo "Public PKI key: ${PKI_DIR}/certbot.key.pub"
 echo "Certbot deploy hook: not enabled"
+
+latest_ssl_state="$(
+    /usr/bin/grep -F 'SECURITY: Secure (SSL) Network Encryption:' "${EVENT_LOG}" 2>/dev/null |
+        /usr/bin/tail -n 1 || true
+)"
+case "${latest_ssl_state}" in
+    *"Network Encryption: Enabled")
+        echo "Database Server SSL runtime precheck: enabled"
+        ;;
+    *"Network Encryption: Disabled")
+        echo "WARNING: Database Server SSL runtime precheck: disabled" >&2
+        echo "Enable UseSecureConnection before the controlled first activation." >&2
+        ;;
+    *)
+        echo "WARNING: Database Server SSL runtime precheck: not available" >&2
+        echo "Verify UseSecureConnection and Event.log before enabling the hook." >&2
+        ;;
+esac
+
 echo "Continue with the registration and initial-activation sections in MANUAL.md."

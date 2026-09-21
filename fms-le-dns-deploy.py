@@ -47,6 +47,7 @@ class Settings:
     pki_key_path: Path
     lineage: Path
     service_name: str
+    event_log_path: Path
     log_path: Path
     request_timeout: int
     state_timeout: int
@@ -86,6 +87,13 @@ def load_settings(path: Path) -> Settings:
             pki_key_path=Path(parser.get("server", "pki_key_path")),
             lineage=Path(parser.get("server", "lineage")),
             service_name=parser.get("server", "service_name", fallback="fmshelper"),
+            event_log_path=Path(
+                parser.get(
+                    "server",
+                    "event_log_path",
+                    fallback="/opt/FileMaker/FileMaker Server/Logs/Event.log",
+                )
+            ),
             log_path=Path(parser.get("logging", "path", fallback="/var/log/fms-le-dns.log")),
             request_timeout=parser.getint("timeouts", "request", fallback=30),
             state_timeout=parser.getint("timeouts", "state", fallback=300),
@@ -104,6 +112,7 @@ def load_settings(path: Path) -> Settings:
     for value_name, value in (
         ("pki_key_path", settings.pki_key_path),
         ("lineage", settings.lineage),
+        ("event_log_path", settings.event_log_path),
         ("log_path", settings.log_path),
     ):
         if not value.is_absolute():
@@ -518,6 +527,31 @@ def control_filemaker_service(settings: Settings, action: str) -> None:
         )
 
 
+def verify_database_ssl_enabled(settings: Settings) -> None:
+    if not settings.event_log_path.is_file():
+        raise DeploymentError(
+            f"missing FileMaker Event log: {settings.event_log_path}"
+        )
+
+    marker = "SECURITY: Secure (SSL) Network Encryption:"
+    latest = ""
+    with settings.event_log_path.open("r", encoding="utf-8", errors="replace") as log:
+        for line in log:
+            if marker in line:
+                latest = line.strip()
+
+    if not latest:
+        raise DeploymentError(
+            "FileMaker Event log contains no Database Server SSL state"
+        )
+    if not latest.endswith("Enabled"):
+        raise DeploymentError(
+            "Database Server SSL is not enabled; set FileMaker server preference "
+            "UseSecureConnection=true and restart FileMaker Server"
+        )
+    logging.info("verified Database Server SSL network encryption is enabled")
+
+
 def main() -> int:
     args = parse_args()
     require_root()
@@ -541,6 +575,7 @@ def main() -> int:
             presented_certificate(settings)
         ).hexdigest()
         if current_fingerprint == expected_fingerprint:
+            verify_database_ssl_enabled(settings)
             logging.info("target certificate is already active; nothing to do")
             return 0
     except (OSError, ssl.SSLError) as exc:
@@ -586,6 +621,7 @@ def main() -> int:
 
     logging.info("verifying externally presented certificate")
     wait_for_presented_certificate(settings, cert_der)
+    verify_database_ssl_enabled(settings)
     logging.info("certificate deployment completed successfully")
     del lock_file
     return 0

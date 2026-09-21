@@ -28,12 +28,14 @@ Installation is deliberately staged:
 3. Register the generated public key in FileMaker Admin Console.
 4. Request the initial certificate while the deploy hook is still disabled.
 5. Validate the certificate files without changing FileMaker.
-6. Perform the controlled first import and activation.
-7. Verify trusted HTTPS and FileMaker status.
-8. Enable the Certbot deploy hook.
-9. Test renewal and the enabled hook.
+6. Enable FileMaker Database Server SSL through the supported interactive CLI.
+7. Perform the controlled first import and activation.
+8. Verify trusted HTTPS, Database Server SSL, and FileMaker status.
+9. Enable the Certbot deploy hook.
+10. Test renewal and the enabled hook.
 
 The installer never issues a certificate, registers a FileMaker key, restarts FileMaker, or enables the deploy hook.
+It performs a passwordless precheck of the latest FileMaker Event log entry and warns when Database Server SSL is disabled or cannot be determined. This warning is expected on some new installations and does not make the staged installation fail.
 
 ## 4. Security model
 
@@ -252,7 +254,45 @@ sudo /usr/bin/python3 \
 
 This checks file presence, ownership and permissions, SAN, validity period, certificate/private-key match, and chain trust. It does not contact FileMaker or restart services.
 
-## 12. Controlled first activation
+## 12. Enable Database Server SSL
+
+Before activation, enable SSL for FileMaker Pro and FileMaker Go Database Server connections through FileMaker's supported CLI. This setting is not exposed by the FileMaker Admin API v2 endpoint used by this project.
+
+Inspect the setting interactively:
+
+```bash
+sudo /usr/bin/fmsadmin get serverprefs |
+grep -E 'UseSecureConnection|AuthenticatedStream'
+```
+
+Enter the Admin Console credentials when prompted. Do not put the password on the command line or in a script.
+
+If the output shows `UseSecureConnection = false`, enable it:
+
+```bash
+sudo /usr/bin/fmsadmin \
+  set serverprefs \
+  UseSecureConnection=true
+```
+
+Confirm the persisted value:
+
+```bash
+sudo /usr/bin/fmsadmin get serverprefs |
+grep -E 'UseSecureConnection|AuthenticatedStream'
+```
+
+Expected:
+
+```text
+UseSecureConnection = true
+```
+
+Do not confuse `UseSecureConnection` with `SecureFilesOnly` or the Admin API property `requireSecureDB`. Those settings require password-protected Full Access accounts for hosted files; they do not enable TLS on port 5003.
+
+Do not restart FileMaker separately at this point. The controlled activation below performs the required full restart, applying both the certificate and `UseSecureConnection=true` in one maintenance interruption.
+
+## 13. Controlled first activation
 
 This step imports the certificate and restarts all FileMaker Server processes. Schedule a maintenance window and ensure a current FileMaker backup exists.
 
@@ -275,9 +315,10 @@ The program performs these operations:
 4. Requests a graceful Database Server stop.
 5. Stops and starts all FileMaker Server processes through `fmshelper`.
 6. Waits for the configured FQDN to present the expected trusted certificate.
-7. Invalidates the Admin API session.
+7. Confirms from the FileMaker Event log that Database Server SSL network encryption is enabled.
+8. Invalidates the Admin API session.
 
-## 13. Verify the active service
+## 14. Verify the active service
 
 ```bash
 curl --fail --silent --show-error \
@@ -294,7 +335,20 @@ openssl x509 \
   -noout -subject -issuer -serial -dates -fingerprint -sha256
 
 sudo /usr/sbin/service fmshelper status
+
+sudo grep -F \
+  'SECURITY: Secure (SSL) Network Encryption:' \
+  "/opt/FileMaker/FileMaker Server/Logs/Event.log" |
+tail -n 5
 ```
+
+The newest Event log entry must end with:
+
+```text
+SECURITY: Secure (SSL) Network Encryption: Enabled
+```
+
+Open a hosted file from FileMaker Pro using the exact certificate FQDN. The client must show a verified secure lock; `Get(ConnectionState)` must return `3`.
 
 Run the deployment program again without bootstrap mode. It should report that the target certificate is already active and make no changes:
 
@@ -304,13 +358,15 @@ sudo /usr/bin/python3 \
   --config /etc/fms-le-dns/fms-le-dns.conf
 ```
 
-## 14. Enable and test the deploy hook
+## 15. Enable and test the deploy hook
 
 Enable the hook only after successful first activation and external verification:
 
 ```bash
 sudo /opt/fms-le-dns/bin/fms-le-dns-enable-hook
 ```
+
+The helper refuses to enable the hook unless the latest FileMaker Event log state reports Database Server SSL network encryption as enabled.
 
 Verify the installed hook:
 
@@ -331,7 +387,7 @@ sudo certbot renew \
 
 The dry run must succeed. When the production certificate is already active, the hook should take the idempotent no-op path and must not restart FileMaker.
 
-## 15. Routine operation
+## 16. Routine operation
 
 Certbot's Snap timer owns renewal. Do not create a second timer or cron schedule.
 
@@ -350,7 +406,7 @@ The deployment program uses `/run/fms-le-dns.lock` to reject concurrent runs. It
 
 No external alert destination is built into the project. Integrate the non-zero Certbot service result or journal with the site's monitoring system when automated notification is required.
 
-## 16. Updating the program
+## 17. Updating the program
 
 Review changes and take a protected backup first. From the new installation-kit directory, run:
 
@@ -368,7 +424,7 @@ sudo /opt/fms-le-dns/bin/fms-le-dns-enable-hook
 
 Then repeat the read-only check and Certbot dry run with deploy hooks.
 
-## 17. Backup and recovery
+## 18. Backup and recovery
 
 The recovery bundle contains private keys and credentials. Store it as `root:root 0600`, encrypt it before off-host transfer, and keep the decryption key separately according to organizational policy.
 
@@ -406,7 +462,7 @@ For recovery:
 
 Never restore, replace, or edit FileMaker `CStore` directly.
 
-## 18. Troubleshooting
+## 19. Troubleshooting
 
 | Symptom | Check | Response |
 |---|---|---|
@@ -416,10 +472,11 @@ Never restore, replace, or edit FileMaker `CStore` directly.
 | Import fails | Deployment log and Admin API result | Correct the input or API configuration; never edit `CStore`. |
 | FileMaker does not return | `service fmshelper status`, journal, FileMaker Event log | Use supported `fmshelper` service control and investigate startup. |
 | Old certificate remains visible | Compare Certbot and external SHA-256 fingerprints | Perform the full controlled activation; an Admin API Database Server stop/start alone is insufficient. |
+| FileMaker Pro reports an unencrypted connection | Latest Event log SSL state and `fmsadmin get serverprefs` | Set `UseSecureConnection=true` interactively, restart FileMaker Server, and require the Event log to report `Enabled`. |
 | Another deployment is running | Active process and `/run/fms-le-dns.lock` | Wait for the active run. Do not remove lock state without confirming no deployment is active. |
 | Certbot renews but deployment fails | Both logs and externally presented certificate | Correct the deployment fault and rerun the program against the configured lineage. |
 
-## 19. Acceptance checklist
+## 20. Acceptance checklist
 
 - [ ] Configuration contains the intended FQDN, lineage, and PKI key name.
 - [ ] All project files are root-owned with documented modes.
@@ -428,8 +485,11 @@ Never restore, replace, or edit FileMaker `CStore` directly.
 - [ ] Public key is registered under the exact configured name.
 - [ ] Production certificate SAN, dates, key, and chain validate.
 - [ ] Read-only deployment check succeeds.
+- [ ] `UseSecureConnection = true` is confirmed through `fmsadmin get serverprefs`.
 - [ ] Controlled first activation succeeds during a maintenance window.
 - [ ] Public HTTPS presents the expected trusted certificate.
+- [ ] Latest Event log state reports Database Server SSL network encryption enabled.
+- [ ] FileMaker Pro shows a verified secure lock and `Get(ConnectionState)` returns `3`.
 - [ ] Normal deployment rerun is an idempotent no-op.
 - [ ] Deploy hook is enabled only after first activation.
 - [ ] Certbot dry run with deploy hooks succeeds.

@@ -4,6 +4,7 @@ pki_key_name = {{PKI_KEY_NAME}}
 pki_key_path = /etc/fms-le-dns/pki/certbot.key
 lineage = /etc/letsencrypt/live/{{LINEAGE_NAME}}
 service_name = fmshelper
+event_log_path = /opt/FileMaker/FileMaker Server/Logs/Event.log
 
 [timeouts]
 request = 30
